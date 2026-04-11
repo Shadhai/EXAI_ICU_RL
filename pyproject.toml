@@ -6,7 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "healthcare-monitor-titans"
 version = "1.0.0"
 description = "ICU simulation with explainable AI and OpenEnv compliance"
-authors = [{name = "Joseph Shadahi", email = "2300032260cse@gmail.com"},{name = "ARIF", email = "2300030757cseh@gmail.com"}]
+authors = [{name = "Joseph", email = "2300032260cse@gmail.com"},{name = "ARIF", email = "2300030757cseh@gmail.com"}]
+
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +18,11 @@ dependencies = [
     "pydantic>=2.4.0",
     "openai>=1.3.0",
     "python-multipart>=0.0.6",
+    "openenv-core>=0.2.0",          # Required for validation
 ]
+
+[project.scripts]
+server = "server.app:app"           # Points to server/app.py
 
 [project.urls]
 Homepage = "https://huggingface.co/spaces/JOSEPH1456/EXAI_ICU_RL"
