@@ -1,0 +1,1 @@
+TASK_CONFIG = {"name": "easy", "description": "Stable patient, minimal intervention needed"}

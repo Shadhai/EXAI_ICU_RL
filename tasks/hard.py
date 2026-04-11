@@ -1,0 +1,1 @@
+TASK_CONFIG = {"name": "hard", "description": "ICU crisis, limited resources, GCS ≤12, high FiO2 required"}

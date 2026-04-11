@@ -1,0 +1,1 @@
+TASK_CONFIG = {"name": "medium", "description": "Moderate sepsis, multiple abnormalities, GCS 14"}
