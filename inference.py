@@ -5,23 +5,27 @@ import sys
 import uuid
 import time
 import requests
-from openai import OpenAI
 
-# ----- Environment variables (injected by evaluator) -----
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")   # Your Space URL
-LLM_BASE_URL = os.getenv("API_BASE_URL")   # Proxy URL (same variable name)
-LLM_API_KEY = os.getenv("API_KEY")         # Proxy API key
+# Lazy OpenAI client
+_client = None
 
-# Initialise OpenAI client with proxy settings
-if LLM_BASE_URL and LLM_API_KEY:
-    client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
-    print("[INFO] Using LLM proxy", file=sys.stderr)
-else:
-    client = None
-    print("[WARN] Missing API_BASE_URL or API_KEY; falling back to heuristic", file=sys.stderr)
+def get_openai_client():
+    global _client
+    if _client is not None:
+        return _client
+    api_base = os.getenv("API_BASE_URL")
+    api_key = os.getenv("API_KEY")
+    if not api_base or not api_key:
+        return None
+    try:
+        from openai import OpenAI
+        _client = OpenAI(base_url=api_base, api_key=api_key)
+        return _client
+    except Exception:
+        return None
 
 def llm_decision(state):
-    """Call the LLM via proxy to choose an action."""
+    client = get_openai_client()
     if client is None:
         return heuristic_decision(state)
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
@@ -50,12 +54,10 @@ Return only the action name."""
         if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
             action = "request_lab"
         return action
-    except Exception as e:
-        print(f"[LLM error] {e}, using heuristic", file=sys.stderr)
+    except Exception:
         return heuristic_decision(state)
 
 def heuristic_decision(state):
-    """Fallback heuristic (same as in your policy)."""
     v = state["vitals"]
     l = state["labs"]
     r = state["resources"]
@@ -80,12 +82,12 @@ def heuristic_decision(state):
     return "request_lab"
 
 def run_episode(task="easy", seed=42):
+    base_url = os.getenv("API_BASE_URL", "http://localhost:7860")
     episode_id = str(uuid.uuid4())[:8]
     print(f"[START] episode_id={episode_id} task={task} difficulty={task}")
 
-    # Reset environment
     try:
-        resp = requests.post(f"{API_BASE_URL}/reset", json={"task": task, "seed": seed}, timeout=30)
+        resp = requests.post(f"{base_url}/reset", json={"task": task, "seed": seed}, timeout=30)
         if resp.status_code != 200:
             print(f"Reset failed: {resp.text}")
             return
@@ -94,9 +96,9 @@ def run_episode(task="easy", seed=42):
         return
     data = resp.json()
 
-    # Optional: assign a doctor (does not affect LLM calls)
+    # Optional doctor assignment
     try:
-        assign_resp = requests.post(f"{API_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
+        assign_resp = requests.post(f"{base_url}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
         if assign_resp.status_code == 200:
             doc_name = assign_resp.json().get("assigned_doctor", {}).get("doctor_name", "dr_aditi")
             print(f"[DOCTOR] Assigned: {doc_name}")
@@ -109,25 +111,19 @@ def run_episode(task="easy", seed=42):
     step_data = None
 
     while not done and step < 30:
-        # Get current state
         try:
-            state_resp = requests.get(f"{API_BASE_URL}/state", timeout=30)
+            state_resp = requests.get(f"{base_url}/state", timeout=30)
             if state_resp.status_code != 200:
-                print("Failed to get state")
                 break
             current_state = state_resp.json()["state"]
-        except Exception as e:
-            print(f"State error: {e}")
+        except Exception:
             break
 
-        # Decide action (LLM or heuristic)
         action = llm_decision(current_state)
 
-        # Execute action
         try:
-            step_resp = requests.post(f"{API_BASE_URL}/step", json={"action": action}, timeout=30)
+            step_resp = requests.post(f"{base_url}/step", json={"action": action}, timeout=30)
             if step_resp.status_code != 200:
-                print(f"Step failed: {step_resp.text}")
                 break
             step_data = step_resp.json()
             step += 1
@@ -136,8 +132,7 @@ def run_episode(task="easy", seed=42):
             done = step_data["done"]
             print(f"[STEP] step={step} action={action} reward={reward:.4f}")
             time.sleep(0.05)
-        except Exception as e:
-            print(f"Step error: {e}")
+        except Exception:
             break
 
     final_score = total_reward / step if step > 0 else 0
