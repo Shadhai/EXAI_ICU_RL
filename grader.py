@@ -19,4 +19,3 @@ def grade_episode(episode_data: dict) -> float:
     score *= mult.get(task, 1.0)
     score = max(0.01, min(0.99, score))
     return float(score)
-    
