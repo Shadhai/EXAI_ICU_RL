@@ -1,4 +1,4 @@
-def grader(episode_data: dict) -> float:
+def grade_episode(episode_data: dict) -> float:
     survival = episode_data.get("survival", 0.5)
     final_score = episode_data.get("final_score", 0.0)
     task = episode_data.get("task", "easy")
@@ -27,5 +27,5 @@ def grader(episode_data: dict) -> float:
 TASK_CONFIG = {
     "name": "easy",
     "description": "Stable patient, minimal intervention needed",
-    "grader": grader
+    "grader": grade_episode
 }
