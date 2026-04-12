@@ -5,6 +5,9 @@ environment:
   sdk: docker
   app_port: 7860
 tasks:
-  - easy
-  - medium
-  - hard
+  - name: easy
+    grader: grader.py
+  - name: medium
+    grader: grader.py
+  - name: hard
+    grader: grader.py
