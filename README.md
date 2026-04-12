@@ -1,4 +1,12 @@
-
+---
+title: ICU Sentinel Pulse
+emoji: 🏥
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_file: Dockerfile
+pinned: false
+---
 ```
 # 🏥 ICU Sentinel Pulse – AI-Powered Clinical Decision Support
 
