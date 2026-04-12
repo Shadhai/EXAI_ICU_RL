@@ -20,7 +20,7 @@ def grade_episode(episode_data: dict) -> float:
         mult = {"easy": 1.0, "medium": 1.05, "hard": 1.1}
         score *= mult.get(task, 1.0)
         
-        score = max(0.01, min(0.99, score))
+        score = min(max(score, 0.02), 0.98)
         return float(score)
     except Exception as e:
         import sys
