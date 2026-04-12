@@ -5,40 +5,34 @@ import sys
 import uuid
 import time
 import requests
+from openai import OpenAI
 
-# Try to import OpenAI only if we actually need it (to avoid import errors in Phase 1)
-OPENAI_AVAILABLE = False
+# ------------------------------------------------------------------
+# Phase 2: Must use LLM proxy - fail if variables missing
+# ------------------------------------------------------------------
+PROXY_BASE_URL = os.environ.get("API_BASE_URL")
+PROXY_API_KEY = os.environ.get("API_KEY")
+MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+
+if not PROXY_BASE_URL or not PROXY_API_KEY:
+    print("ERROR: API_BASE_URL and API_KEY environment variables are required.", file=sys.stderr)
+    sys.exit(1)
+
+# Initialize client
+client = OpenAI(base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY)
+
+# Test the proxy with a simple call (list models) to verify it's working
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    pass
+    models = client.models.list()
+    print(f"[PROXY] Successfully connected. First model: {models.data[0].id}", file=sys.stderr)
+except Exception as e:
+    print(f"ERROR: Failed to connect to LLM proxy: {e}", file=sys.stderr)
+    sys.exit(1)
 
-# ----- Environment variables -----
-# For connecting to your Space (the environment itself)
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-
-# For LLM proxy (only set in Phase 2)
-PROXY_BASE_URL = os.getenv("API_BASE_URL")
-PROXY_API_KEY = os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
-
-# Determine if we are in Phase 2 (proxy available)
-USE_LLM = bool(PROXY_BASE_URL and PROXY_API_KEY and OPENAI_AVAILABLE)
-
-if USE_LLM:
-    try:
-        client = OpenAI(base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY)
-        # Test the client with a minimal call? Not needed; just initialise.
-        print("[INFO] LLM proxy initialised (Phase 2 mode)", file=sys.stderr)
-    except Exception as e:
-        print(f"[ERROR] Failed to initialise LLM client: {e}. Falling back to heuristic.", file=sys.stderr)
-        USE_LLM = False
-else:
-    print("[INFO] Running in heuristic mode (Phase 1 or missing proxy variables)", file=sys.stderr)
+# Environment URL (the Space). The evaluator should set this.
+ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "http://localhost:7860")
 
 def llm_decision(state):
-    """Make a decision using the LLM proxy (no fallback)."""
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -65,47 +59,18 @@ Return only the action name."""
         action = "request_lab"
     return action
 
-def heuristic_decision(state):
-    """Fallback heuristic (used in Phase 1 or if LLM fails)."""
-    v = state["vitals"]
-    l = state["labs"]
-    r = state["resources"]
-    task = state.get("task", "easy")
-    step = state["step"]
-    if task == "hard":
-        if step == 0:
-            return "escalate_care"
-        else:
-            return "request_lab"
-    if task == "medium":
-        if step >= 2:
-            return "request_lab"
-        if v["SpO2"] < 92 or v["RR"] > 24:
-            if r["ventilators"] > 0:
-                return "adjust_ventilator"
-            else:
-                return "escalate_care"
-        if v["BP"] < 90 or l["lactate"] > 2.5 or l["pH"] < 7.30:
-            return "administer_drug"
-        return "adjust_ventilator"
-    return "request_lab"
-
 def run_episode(task="easy", seed=42):
     episode_id = str(uuid.uuid4())[:8]
     print(f"[START] episode_id={episode_id} task={task} difficulty={task}")
 
     # Reset environment
-    try:
-        resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task": task, "seed": seed}, timeout=30)
-        if resp.status_code != 200:
-            print(f"Reset failed: {resp.text}")
-            return
-    except Exception as e:
-        print(f"Reset error: {e}")
+    resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task": task, "seed": seed}, timeout=30)
+    if resp.status_code != 200:
+        print(f"Reset failed: {resp.text}")
         return
     data = resp.json()
 
-    # Optional: assign a doctor (does not affect LLM calls)
+    # Assign a doctor (optional)
     try:
         assign_resp = requests.post(f"{ENV_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
         if assign_resp.status_code == 200:
@@ -121,38 +86,27 @@ def run_episode(task="easy", seed=42):
 
     while not done and step < 30:
         # Get current state
-        try:
-            state_resp = requests.get(f"{ENV_BASE_URL}/state", timeout=30)
-            if state_resp.status_code != 200:
-                print("Failed to get state")
-                break
-            current_state = state_resp.json()["state"]
-        except Exception as e:
-            print(f"State error: {e}")
+        state_resp = requests.get(f"{ENV_BASE_URL}/state", timeout=30)
+        if state_resp.status_code != 200:
+            print("Failed to get state")
             break
+        current_state = state_resp.json()["state"]
 
-        # Choose action: LLM if in Phase 2, else heuristic
-        if USE_LLM:
-            action = llm_decision(current_state)
-        else:
-            action = heuristic_decision(current_state)
+        # Use LLM to decide
+        action = llm_decision(current_state)
 
         # Execute action
-        try:
-            step_resp = requests.post(f"{ENV_BASE_URL}/step", json={"action": action}, timeout=30)
-            if step_resp.status_code != 200:
-                print(f"Step failed: {step_resp.text}")
-                break
-            step_data = step_resp.json()
-            step += 1
-            reward = step_data["reward"]
-            total_reward += reward
-            done = step_data["done"]
-            print(f"[STEP] step={step} action={action} reward={reward:.4f}")
-            time.sleep(0.05)
-        except Exception as e:
-            print(f"Step error: {e}")
+        step_resp = requests.post(f"{ENV_BASE_URL}/step", json={"action": action}, timeout=30)
+        if step_resp.status_code != 200:
+            print(f"Step failed: {step_resp.text}")
             break
+        step_data = step_resp.json()
+        step += 1
+        reward = step_data["reward"]
+        total_reward += reward
+        done = step_data["done"]
+        print(f"[STEP] step={step} action={action} reward={reward:.4f}")
+        time.sleep(0.05)
 
     final_score = total_reward / step if step > 0 else 0
     survival = step_data["state"]["survival_probability"] if step_data else data["state"]["survival_probability"]
