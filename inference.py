@@ -5,7 +5,6 @@ import sys
 import uuid
 import time
 import requests
-from openai import OpenAI
 
 # Environment variables for the proxy (injected by evaluator)
 API_BASE_URL = os.getenv("API_BASE_URL")
@@ -17,16 +16,9 @@ ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
 # Determine if we should use LLM (Phase 2)
 USE_LLM = API_BASE_URL and API_KEY
-client = None
-if USE_LLM:
-    try:
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-        print("[INFO] Using LLM proxy", file=sys.stderr)
-    except Exception as e:
-        print(f"[ERROR] Failed to initialize LLM client: {e}", file=sys.stderr)
-        sys.exit(1)
 
 def llm_decision(state):
+    """Make a decision using the LLM proxy via direct HTTP request."""
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -42,16 +34,28 @@ State:
 - Resources: ICU beds={state['resources']['icu_beds']}, ventilators={state['resources']['ventilators']}
 
 Return only the action name."""
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=10
-    )
-    action = response.choices[0].message.content.strip().lower()
-    if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
-        action = "request_lab"
-    return action
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 10
+    }
+    try:
+        response = requests.post(f"{API_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        action = data["choices"][0]["message"]["content"].strip().lower()
+        if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
+            action = "request_lab"
+        return action
+    except Exception as e:
+        print(f"LLM API call failed: {e}", file=sys.stderr)
+        return heuristic_decision(state)  # fallback
 
 def heuristic_decision(state):
     v = state["vitals"]
@@ -118,17 +122,13 @@ def run_episode(task="easy", seed=42):
             print(f"State error: {e}")
             break
 
-        # Decide action (LLM if in Phase 2, else heuristic)
+        # Decide action
         if USE_LLM:
-            try:
-                action = llm_decision(current_state)
-            except Exception as e:
-                print(f"LLM error: {e}, using heuristic", file=sys.stderr)
-                action = heuristic_decision(current_state)
+            action = llm_decision(current_state)
         else:
             action = heuristic_decision(current_state)
 
-        # Execute step with the chosen action
+        # Execute action
         try:
             step_resp = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
             if step_resp.status_code != 200:
