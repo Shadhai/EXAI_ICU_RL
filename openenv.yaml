@@ -1,6 +1,6 @@
 name: healthcare-monitor-titans
 version: 1.0.0
-description: ICU simulation with GCS, FiO2, lactate, pH, RR, qSOFA and explainable AI
+description: ICU simulation with clinical predictors and explainable AI
 environment:
   sdk: docker
   app_port: 7860

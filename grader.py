@@ -1,29 +1,32 @@
-"""
-Grader function for OpenEnv evaluation.
-Returns a score between 0 and 1 based on episode performance.
-"""
+# grader.py
 def grade_episode(episode_data: dict) -> float:
     """
-    episode_data contains: final_survival, total_reward, steps_taken, task_difficulty, etc.
+    Grade an episode. Expects:
+    - final_survival: float (0-1)
+    - total_reward: float
+    - task: str (easy, medium, hard)
+    - early_death: bool (optional)
+    Returns a score strictly between 0 and 1.
     """
-    survival = episode_data.get("final_survival", 0)
-    total_reward = episode_data.get("total_reward", 0)
-    steps = episode_data.get("steps", 30)
+    survival = episode_data.get("final_survival", 0.0)
+    total_reward = episode_data.get("total_reward", 0.0)
     task = episode_data.get("task", "easy")
+    early_death = episode_data.get("early_death", False)
 
-    # Base score from survival
-    score = survival
-
-    # Reward bonus (normalized)
-    reward_bonus = min(0.2, total_reward / 10)
+    # Base score from survival (max 0.8)
+    score = survival * 0.8
+    # Reward bonus (max 0.19 to avoid reaching 1.0)
+    reward_bonus = min(0.19, total_reward / 20)
     score += reward_bonus
 
-    # Penalty if episode ended early due to death
-    if episode_data.get("early_death", False):
-        score *= 0.5
+    # Penalty for early death
+    if early_death:
+        score *= 0.8
 
-    # Task difficulty multiplier
-    difficulty_mult = {"easy": 1.0, "medium": 1.2, "hard": 1.5}
-    score *= difficulty_mult.get(task, 1.0)
+    # Difficulty multiplier (ensures scores are different but still <1)
+    mult = {"easy": 1.0, "medium": 1.05, "hard": 1.1}
+    score *= mult.get(task, 1.0)
 
-    return min(1.0, max(0.0, score))
+    # Clamp strictly between 0.01 and 0.99
+    score = max(0.01, min(0.99, score))
+    return score
