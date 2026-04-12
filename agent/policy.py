@@ -2,37 +2,38 @@ import os
 from typing import Tuple, Dict, Any
 from agent.xai_module import ExplainabilityModule
 
+
 class PolicyAgent:
     def __init__(self, doctor_experiences=None):
-        # Check for LiteLLM proxy environment variables
-        self.api_base = os.getenv("API_BASE_URL")
-        self.api_key = os.getenv("API_KEY")
-        self.use_llm = bool(self.api_base and self.api_key)
         self.xai = ExplainabilityModule()
-        self._llm_disabled_reason = ""
-        self.client = None
+        # NOTE: Do NOT read env vars or build the OpenAI client here.
+        # The evaluator injects API_BASE_URL / API_KEY AFTER the server
+        # process starts, so module-level initialisation always sees them
+        # as empty.  We resolve them lazily inside decide() instead.
 
-        if self.use_llm:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(base_url=self.api_base, api_key=self.api_key)
-                self._llm_disabled_reason = ""
-            except Exception as e:
-                self.use_llm = False
-                self._llm_disabled_reason = f"Failed to initialise OpenAI client: {e}"
-        else:
-            self._llm_disabled_reason = "API_BASE_URL or API_KEY not set"
+    def _get_client(self):
+        """Build an OpenAI client from env vars at call-time, not import-time."""
+        api_base = os.environ.get("API_BASE_URL")
+        api_key  = os.environ.get("API_KEY")
+        if not api_base or not api_key:
+            return None
+        try:
+            from openai import OpenAI
+            return OpenAI(base_url=api_base, api_key=api_key)
+        except Exception as e:
+            print(f"[WARN] PolicyAgent: failed to init OpenAI client: {e}")
+            return None
 
     def decide(self, state: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
-        if self.use_llm and self.client:
-            action = self._llm_decision(state)
+        client = self._get_client()
+        if client:
+            action = self._llm_decision(state, client)
         else:
             action = self._heuristic(state)
         explanation = self.xai.explain(state, action)
         return action, explanation
 
-    def _llm_decision(self, state: Dict[str, Any]) -> str:
-        # Build a prompt from the state
+    def _llm_decision(self, state: Dict[str, Any], client) -> str:
         prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -49,8 +50,8 @@ State:
 
 Return only the action name."""
         try:
-            response = self.client.chat.completions.create(
-                model=os.getenv("MODEL_NAME", "gpt-4o-mini"),
+            response = client.chat.completions.create(
+                model=os.environ.get("MODEL_NAME", "gpt-4o-mini"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=10
@@ -59,33 +60,25 @@ Return only the action name."""
             if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
                 action = "request_lab"
             return action
-        except Exception:
-            # Fallback to heuristic on error
+        except Exception as e:
+            print(f"[WARN] LLM call failed: {e}. Falling back to heuristic.")
             return self._heuristic(state)
 
     def _heuristic(self, state: Dict[str, Any]) -> str:
-        # Your existing heuristic (same as before)
         v = state["vitals"]
         l = state["labs"]
         r = state["resources"]
         task = state.get("task", "easy")
-        step = state["step"]
+        step = state.get("step", 0)
 
         if task == "hard":
-            if step == 0:
-                return "escalate_care"
-            else:
-                return "request_lab"
+            return "escalate_care" if step == 0 else "request_lab"
         if task == "medium":
             if step >= 2:
                 return "request_lab"
             if v["SpO2"] < 92 or v["RR"] > 24:
-                if r["ventilators"] > 0:
-                    return "adjust_ventilator"
-                else:
-                    return "escalate_care"
+                return "adjust_ventilator" if r["ventilators"] > 0 else "escalate_care"
             if v["BP"] < 90 or l["lactate"] > 2.5 or l["pH"] < 7.30:
                 return "administer_drug"
             return "adjust_ventilator"
         return "request_lab"
-        
