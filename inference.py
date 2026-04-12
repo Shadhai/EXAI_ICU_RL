@@ -6,36 +6,41 @@ import uuid
 import time
 import requests
 
-# Try to import OpenAI (optional for Phase 1)
+# Try to import OpenAI
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
 
-# Environment variables
+# Static config
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-PROXY_BASE_URL = os.getenv("API_BASE_URL")
-PROXY_API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
-# Determine if we should use LLM (Phase 2 mode)
-USE_LLM = False
-client = None
-if PROXY_BASE_URL and PROXY_API_KEY and OPENAI_AVAILABLE:
+print("[INFO] inference.py loaded. OPENAI_AVAILABLE=%s" % OPENAI_AVAILABLE, file=sys.stderr)
+
+
+def get_llm_client():
+    """Build OpenAI client from env vars at call-time (not import-time)."""
+    api_base = os.environ.get("API_BASE_URL")
+    api_key  = os.environ.get("API_KEY")
+    if not api_base or not api_key or not OPENAI_AVAILABLE:
+        return None
     try:
-        client = OpenAI(base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY)
-        # Small test call to verify the proxy is working (but don't exit on failure)
-        client.models.list()
-        USE_LLM = True
-        print("[INFO] LLM proxy mode active", file=sys.stderr)
+        return OpenAI(base_url=api_base, api_key=api_key)
     except Exception as e:
-        print(f"[WARN] LLM proxy initialization failed: {e}. Falling back to heuristic.", file=sys.stderr)
-else:
-    print("[INFO] Heuristic mode (Phase 1 or missing proxy)", file=sys.stderr)
+        print(f"[WARN] Failed to init LLM client: {e}", file=sys.stderr)
+        return None
+
 
 def llm_decision(state):
-    """Make a decision using the LLM proxy."""
+    """Call the hackathon LLM proxy and return an action."""
+    client = get_llm_client()
+    if client is None:
+        print("[WARN] llm_decision: no client, falling back to heuristic", file=sys.stderr)
+        return heuristic_decision(state)
+
+    model = os.environ.get("MODEL_NAME", MODEL_NAME)
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -51,45 +56,52 @@ State:
 - Resources: ICU beds={state['resources']['icu_beds']}, ventilators={state['resources']['ventilators']}
 
 Return only the action name."""
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=10
-    )
-    action = response.choices[0].message.content.strip().lower()
-    if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
-        action = "request_lab"
-    return action
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=10
+        )
+        action = response.choices[0].message.content.strip().lower()
+        print(f"[LLM] action={action!r}", file=sys.stderr)
+        if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
+            action = "request_lab"
+        return action
+    except Exception as e:
+        print(f"[WARN] LLM call failed: {e}. Falling back to heuristic.", file=sys.stderr)
+        return heuristic_decision(state)
+
 
 def heuristic_decision(state):
-    """Fallback heuristic (used in Phase 1 or if LLM fails)."""
     v = state["vitals"]
     l = state["labs"]
     r = state["resources"]
     task = state.get("task", "easy")
-    step = state["step"]
+    step = state.get("step", 0)
     if task == "hard":
-        if step == 0:
-            return "escalate_care"
-        else:
-            return "request_lab"
+        return "escalate_care" if step == 0 else "request_lab"
     if task == "medium":
         if step >= 2:
             return "request_lab"
         if v["SpO2"] < 92 or v["RR"] > 24:
-            if r["ventilators"] > 0:
-                return "adjust_ventilator"
-            else:
-                return "escalate_care"
+            return "adjust_ventilator" if r["ventilators"] > 0 else "escalate_care"
         if v["BP"] < 90 or l["lactate"] > 2.5 or l["pH"] < 7.30:
             return "administer_drug"
         return "adjust_ventilator"
     return "request_lab"
 
+
 def run_episode(task="easy", seed=42):
     episode_id = str(uuid.uuid4())[:8]
     print(f"[START] episode_id={episode_id} task={task} difficulty={task}")
+
+    # Determine mode at RUNTIME, not import time
+    api_base = os.environ.get("API_BASE_URL")
+    api_key  = os.environ.get("API_KEY")
+    use_llm  = bool(api_base and api_key and OPENAI_AVAILABLE)
+    print(f"[INFO] use_llm={use_llm} API_BASE_URL={'SET' if api_base else 'NOT SET'}", file=sys.stderr)
 
     # Reset environment
     try:
@@ -102,13 +114,15 @@ def run_episode(task="easy", seed=42):
         return
     data = resp.json()
 
-    # Assign a doctor (optional)
+    # Optional: assign a doctor
     try:
-        assign_resp = requests.post(f"{ENV_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
+        assign_resp = requests.post(
+            f"{ENV_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30
+        )
         if assign_resp.status_code == 200:
             doc_name = assign_resp.json().get("assigned_doctor", {}).get("doctor_name", "dr_aditi")
             print(f"[DOCTOR] Assigned: {doc_name}")
-    except:
+    except Exception:
         pass
 
     step = 0
@@ -128,13 +142,13 @@ def run_episode(task="easy", seed=42):
             print(f"State error: {e}")
             break
 
-        # Choose action: LLM if available, else heuristic
-        if USE_LLM:
-            try:
-                action = llm_decision(current_state)
-            except Exception as e:
-                print(f"LLM decision failed: {e}, using heuristic", file=sys.stderr)
-                action = heuristic_decision(current_state)
+        # Inject step/task context for heuristic fallback
+        current_state["step"] = step
+        current_state["task"] = task
+
+        # Choose action
+        if use_llm:
+            action = llm_decision(current_state)
         else:
             action = heuristic_decision(current_state)
 
@@ -156,8 +170,13 @@ def run_episode(task="easy", seed=42):
             break
 
     final_score = total_reward / step if step > 0 else 0
-    survival = step_data["state"]["survival_probability"] if step_data else data["state"]["survival_probability"]
+    survival = (
+        step_data["state"]["survival_probability"]
+        if step_data
+        else data["state"]["survival_probability"]
+    )
     print(f"[END] final_score={final_score:.4f} survival={survival:.4f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
