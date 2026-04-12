@@ -16,23 +16,26 @@ except ImportError:
 # Environment variables
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 PROXY_BASE_URL = os.getenv("API_BASE_URL")
-PROXY_API_KEY = os.getenv("API_KEY")
+PROXY_API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
-# Determine if we are in Phase 2 (proxy available and OpenAI installed)
-USE_LLM = PROXY_BASE_URL and PROXY_API_KEY and OPENAI_AVAILABLE
-
-if USE_LLM:
+# Determine if we should use LLM (Phase 2 mode)
+USE_LLM = False
+client = None
+if PROXY_BASE_URL and PROXY_API_KEY and OPENAI_AVAILABLE:
     try:
         client = OpenAI(base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY)
+        # Small test call to verify the proxy is working (but don't exit on failure)
+        client.models.list()
+        USE_LLM = True
         print("[INFO] LLM proxy mode active", file=sys.stderr)
     except Exception as e:
-        print(f"[WARN] Failed to init LLM client: {e}. Falling back to heuristic.", file=sys.stderr)
-        USE_LLM = False
+        print(f"[WARN] LLM proxy initialization failed: {e}. Falling back to heuristic.", file=sys.stderr)
 else:
     print("[INFO] Heuristic mode (Phase 1 or missing proxy)", file=sys.stderr)
 
 def llm_decision(state):
+    """Make a decision using the LLM proxy."""
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -60,6 +63,7 @@ Return only the action name."""
     return action
 
 def heuristic_decision(state):
+    """Fallback heuristic (used in Phase 1 or if LLM fails)."""
     v = state["vitals"]
     l = state["labs"]
     r = state["resources"]
@@ -98,7 +102,7 @@ def run_episode(task="easy", seed=42):
         return
     data = resp.json()
 
-    # Optional: assign a doctor (does not affect LLM calls)
+    # Assign a doctor (optional)
     try:
         assign_resp = requests.post(f"{ENV_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
         if assign_resp.status_code == 200:
@@ -124,9 +128,13 @@ def run_episode(task="easy", seed=42):
             print(f"State error: {e}")
             break
 
-        # Choose action: LLM if in Phase 2, else heuristic
+        # Choose action: LLM if available, else heuristic
         if USE_LLM:
-            action = llm_decision(current_state)
+            try:
+                action = llm_decision(current_state)
+            except Exception as e:
+                print(f"LLM decision failed: {e}, using heuristic", file=sys.stderr)
+                action = heuristic_decision(current_state)
         else:
             action = heuristic_decision(current_state)
 
