@@ -25,8 +25,6 @@ def grade_episode(episode_data: dict) -> float:
 
     score = max(0.01, min(0.99, score))
     return float(score)
-<<<<<<< HEAD
-=======
 
 
 # Evaluator may call grade() directly
@@ -45,4 +43,3 @@ if __name__ == "__main__":
         print(result)
     except Exception:
         print(0.5)
->>>>>>> 7f99803ec37805f52781e45a3000914cc07f2d1e
