@@ -7,3 +7,5 @@ TASKS = {
     "medium": MEDIUM_TASK,
     "hard": HARD_TASK
 }
+
+__all__ = ["TASKS"]
