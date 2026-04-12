@@ -13,8 +13,15 @@ def grade_episode(episode_data: dict) -> float:
     task = episode_data.get("task", "easy")
     early_death = episode_data.get("early_death", False)
 
+    # Clamp survival to avoid exact 0 or 1
+    if survival <= 0.0:
+        survival = 0.01
+    elif survival >= 1.0:
+        survival = 0.99
+
     # Base score from survival (max 0.8)
     score = survival * 0.8
+
     # Reward bonus (max 0.19 to avoid reaching 1.0)
     reward_bonus = min(0.19, total_reward / 20)
     score += reward_bonus
@@ -23,10 +30,14 @@ def grade_episode(episode_data: dict) -> float:
     if early_death:
         score *= 0.8
 
-    # Difficulty multiplier (ensures scores are different but still <1)
+    # Difficulty multiplier
     mult = {"easy": 1.0, "medium": 1.05, "hard": 1.1}
     score *= mult.get(task, 1.0)
 
-    # Clamp strictly between 0.01 and 0.99
-    score = max(0.01, min(0.99, score))
+    # Final clamp strictly between 0.01 and 0.99
+    if score <= 0.0:
+        score = 0.01
+    elif score >= 1.0:
+        score = 0.99
+
     return score
