@@ -6,28 +6,39 @@ import uuid
 import time
 import requests
 
-# Lazy OpenAI client
-_client = None
+# Try to import OpenAI only if we actually need it (to avoid import errors in Phase 1)
+OPENAI_AVAILABLE = False
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    pass
 
-def get_openai_client():
-    global _client
-    if _client is not None:
-        return _client
-    api_base = os.getenv("API_BASE_URL")
-    api_key = os.getenv("API_KEY")
-    if not api_base or not api_key:
-        return None
+# ----- Environment variables -----
+# For connecting to your Space (the environment itself)
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
+
+# For LLM proxy (only set in Phase 2)
+PROXY_BASE_URL = os.getenv("API_BASE_URL")
+PROXY_API_KEY = os.getenv("API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+# Determine if we are in Phase 2 (proxy available)
+USE_LLM = bool(PROXY_BASE_URL and PROXY_API_KEY and OPENAI_AVAILABLE)
+
+if USE_LLM:
     try:
-        from openai import OpenAI
-        _client = OpenAI(base_url=api_base, api_key=api_key)
-        return _client
-    except Exception:
-        return None
+        client = OpenAI(base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY)
+        # Test the client with a minimal call? Not needed; just initialise.
+        print("[INFO] LLM proxy initialised (Phase 2 mode)", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Failed to initialise LLM client: {e}. Falling back to heuristic.", file=sys.stderr)
+        USE_LLM = False
+else:
+    print("[INFO] Running in heuristic mode (Phase 1 or missing proxy variables)", file=sys.stderr)
 
 def llm_decision(state):
-    client = get_openai_client()
-    if client is None:
-        return heuristic_decision(state)
+    """Make a decision using the LLM proxy (no fallback)."""
     prompt = f"""You are an ICU AI agent. Based on the following patient state, choose one action: administer_drug, adjust_ventilator, request_lab, escalate_care.
 
 State:
@@ -43,21 +54,19 @@ State:
 - Resources: ICU beds={state['resources']['icu_beds']}, ventilators={state['resources']['ventilators']}
 
 Return only the action name."""
-    try:
-        response = client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "gpt-4o-mini"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=10
-        )
-        action = response.choices[0].message.content.strip().lower()
-        if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
-            action = "request_lab"
-        return action
-    except Exception:
-        return heuristic_decision(state)
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=10
+    )
+    action = response.choices[0].message.content.strip().lower()
+    if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
+        action = "request_lab"
+    return action
 
 def heuristic_decision(state):
+    """Fallback heuristic (used in Phase 1 or if LLM fails)."""
     v = state["vitals"]
     l = state["labs"]
     r = state["resources"]
@@ -82,12 +91,12 @@ def heuristic_decision(state):
     return "request_lab"
 
 def run_episode(task="easy", seed=42):
-    base_url = os.getenv("API_BASE_URL", "http://localhost:7860")
     episode_id = str(uuid.uuid4())[:8]
     print(f"[START] episode_id={episode_id} task={task} difficulty={task}")
 
+    # Reset environment
     try:
-        resp = requests.post(f"{base_url}/reset", json={"task": task, "seed": seed}, timeout=30)
+        resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task": task, "seed": seed}, timeout=30)
         if resp.status_code != 200:
             print(f"Reset failed: {resp.text}")
             return
@@ -96,9 +105,9 @@ def run_episode(task="easy", seed=42):
         return
     data = resp.json()
 
-    # Optional doctor assignment
+    # Optional: assign a doctor (does not affect LLM calls)
     try:
-        assign_resp = requests.post(f"{base_url}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
+        assign_resp = requests.post(f"{ENV_BASE_URL}/assign_doctor", json={"doctor_id": "dr_aditi"}, timeout=30)
         if assign_resp.status_code == 200:
             doc_name = assign_resp.json().get("assigned_doctor", {}).get("doctor_name", "dr_aditi")
             print(f"[DOCTOR] Assigned: {doc_name}")
@@ -111,19 +120,28 @@ def run_episode(task="easy", seed=42):
     step_data = None
 
     while not done and step < 30:
+        # Get current state
         try:
-            state_resp = requests.get(f"{base_url}/state", timeout=30)
+            state_resp = requests.get(f"{ENV_BASE_URL}/state", timeout=30)
             if state_resp.status_code != 200:
+                print("Failed to get state")
                 break
             current_state = state_resp.json()["state"]
-        except Exception:
+        except Exception as e:
+            print(f"State error: {e}")
             break
 
-        action = llm_decision(current_state)
+        # Choose action: LLM if in Phase 2, else heuristic
+        if USE_LLM:
+            action = llm_decision(current_state)
+        else:
+            action = heuristic_decision(current_state)
 
+        # Execute action
         try:
-            step_resp = requests.post(f"{base_url}/step", json={"action": action}, timeout=30)
+            step_resp = requests.post(f"{ENV_BASE_URL}/step", json={"action": action}, timeout=30)
             if step_resp.status_code != 200:
+                print(f"Step failed: {step_resp.text}")
                 break
             step_data = step_resp.json()
             step += 1
@@ -132,7 +150,8 @@ def run_episode(task="easy", seed=42):
             done = step_data["done"]
             print(f"[STEP] step={step} action={action} reward={reward:.4f}")
             time.sleep(0.05)
-        except Exception:
+        except Exception as e:
+            print(f"Step error: {e}")
             break
 
     final_score = total_reward / step if step > 0 else 0
