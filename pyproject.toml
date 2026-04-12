@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "server.app:app"           # Points to server/app.py
+server = "server.app:main"           # Points to server/app.py
 
 [project.urls]
 Homepage = "https://huggingface.co/spaces/JOSEPH1456/EXAI_ICU_RL"
