@@ -1,12 +1,10 @@
-def grader(episode_data: dict) -> float:
+def grade_episode(episode_data: dict) -> float:
     try:
-        # Default to safe float values robustly handling None values
         survival = float(episode_data.get("survival") or 0.5)
         final_score = float(episode_data.get("final_score") or 0.0)
         task = str(episode_data.get("task") or "hard")
         early_death = bool(episode_data.get("early_death") or False)
 
-        # Clamp survival to avoid exact 0 or 1
         if survival <= 0.0:
             survival = 0.01
         elif survival >= 1.0:
@@ -27,10 +25,10 @@ def grader(episode_data: dict) -> float:
     except Exception as e:
         import sys
         print(f"[GRADER EXCEPTION]: {e}", file=sys.stderr)
-        return 0.5  # Completely safe fallback within strictly (0, 1)
+        return 0.5
 
 TASK_CONFIG = {
     "name": "hard",
     "description": "ICU crisis, limited resources, GCS ≤12, high FiO2 required",
-    "grader": grader
+    "grader": grade_episode
 }
