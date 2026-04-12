@@ -1,4 +1,5 @@
 import os
+import requests
 from typing import Tuple, Dict, Any
 from agent.xai_module import ExplainabilityModule
 
@@ -8,24 +9,14 @@ class PolicyAgent:
         self.api_base = os.getenv("API_BASE_URL")
         self.api_key = os.getenv("API_KEY")
         self.use_llm = bool(self.api_base and self.api_key)
-        self.client = None
         self.xai = ExplainabilityModule()
         self._llm_disabled_reason = ""
 
-        if self.use_llm:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(base_url=self.api_base, api_key=self.api_key)
-                # Optional test call (silent)
-                # self.client.models.list()
-            except Exception as e:
-                self.use_llm = False
-                self._llm_disabled_reason = f"LLM init failed: {e}"
-        else:
+        if not self.use_llm:
             self._llm_disabled_reason = "API_BASE_URL or API_KEY not set"
 
     def decide(self, state: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
-        if self.use_llm and self.client:
+        if self.use_llm:
             action = self._llm_decision(state)
         else:
             action = self._heuristic(state)
@@ -48,14 +39,21 @@ State:
 - Resources: ICU beds={state['resources']['icu_beds']}, ventilators={state['resources']['ventilators']}
 
 Return only the action name."""
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        payload = {
+            "model": os.getenv("MODEL_NAME", "gpt-4o-mini"),
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 10
+        }
         try:
-            response = self.client.chat.completions.create(
-                model=os.getenv("MODEL_NAME", "gpt-4o-mini"),
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=10
-            )
-            action = response.choices[0].message.content.strip().lower()
+            response = requests.post(f"{self.api_base}/chat/completions", headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            action = data["choices"][0]["message"]["content"].strip().lower()
             if action not in ["administer_drug", "adjust_ventilator", "request_lab", "escalate_care"]:
                 action = "request_lab"
             return action
