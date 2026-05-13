@@ -7,7 +7,7 @@ sdk: docker
 app_file: Dockerfile
 pinned: false
 ---
-```
+
 <div align="center">
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:4776e6,50:8e54e9,100:c471ed&height=220&section=header&text=🧠%20EXAI-ICU-RL&fontSize=52&fontColor=ffffff&fontAlignY=38&desc=Explainable%20AI%20%2B%20Reinforcement%20Learning%20for%20ICU%20Clinical%20Decision%20Support&descAlignY=60&descSize=16&animation=fadeIn" width="100%" />
